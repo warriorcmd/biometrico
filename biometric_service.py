@@ -147,23 +147,86 @@ async def procesar(archivo: UploadFile):
         if not marcas:
             return []
         
-        # Paso 1: Eliminar duplicados MUY cercanos (< 5 minutos)
-        filtered = [marcas[0]]
-        for i in range(1, len(marcas)):
-            diff_minutos = (marcas[i] - filtered[-1]).total_seconds() / 60
-            if diff_minutos > 5:
-                filtered.append(marcas[i])
+        # Paso 1: Agrupar marcas cercanas (< 5 minutos) y decidir cuál mantener según contexto
+        # ENTRADA: mantener el PRIMERO (llegó en el primer registro)
+        # SALIDA: mantener el ÚLTIMO (se fue en el último registro)
+        
+        # Primero, hacer una pre-clasificación temporal para saber qué tipo es cada grupo
+        grupos_duplicados = []
+        i = 0
+        while i < len(marcas):
+            grupo = [marcas[i]]
+            j = i + 1
+            while j < len(marcas):
+                diff_minutos = (marcas[j] - marcas[i]).total_seconds() / 60
+                if diff_minutos <= 5:
+                    grupo.append(marcas[j])
+                    j += 1
+                else:
+                    break
+            grupos_duplicados.append(grupo)
+            i = j
+        
+        # Ahora procesar cada grupo con lógica inteligente
+        filtered = []
+        ultimo_tipo = None
+        
+        for grupo in grupos_duplicados:
+            if len(grupo) == 1:
+                filtered.append(grupo[0])
+                # Determinar tipo para siguiente iteración
+                hora = grupo[0].hour
+                if hora < 6:
+                    ultimo_tipo = 'SALIDA'
+                elif ultimo_tipo is None:
+                    ultimo_tipo = 'ENTRADA'
+                elif len(filtered) > 1:
+                    diff_horas = (grupo[0] - filtered[-2]).total_seconds() / 3600
+                    if diff_horas > 12:
+                        ultimo_tipo = 'ENTRADA'
+                    elif diff_horas >= 2 and ultimo_tipo == 'SALIDA':
+                        ultimo_tipo = 'ENTRADA'
+                    else:
+                        ultimo_tipo = 'SALIDA' if ultimo_tipo == 'ENTRADA' else 'ENTRADA'
+                else:
+                    ultimo_tipo = 'SALIDA' if ultimo_tipo == 'ENTRADA' else 'ENTRADA'
             else:
-                print(f"  🔄 Duplicado eliminado: {marcas[i].strftime('%Y-%m-%d %H:%M')} (diff={diff_minutos:.1f} min)")
+                # Grupo de duplicados - determinar tipo primero
+                hora = grupo[0].hour
+                if hora < 6:
+                    tipo_grupo = 'SALIDA'
+                elif ultimo_tipo is None:
+                    tipo_grupo = 'ENTRADA'
+                elif len(filtered) > 0:
+                    diff_horas = (grupo[0] - filtered[-1]).total_seconds() / 3600
+                    if diff_horas > 12:
+                        tipo_grupo = 'ENTRADA'
+                    elif diff_horas >= 2 and ultimo_tipo == 'SALIDA':
+                        tipo_grupo = 'ENTRADA'
+                    else:
+                        tipo_grupo = 'SALIDA' if ultimo_tipo == 'ENTRADA' else 'ENTRADA'
+                else:
+                    tipo_grupo = 'SALIDA' if ultimo_tipo == 'ENTRADA' else 'ENTRADA'
+                
+                # Seleccionar según el tipo
+                if tipo_grupo == 'ENTRADA':
+                    marca_seleccionada = grupo[0]  # PRIMERO
+                    print(f"  🔄 Grupo ENTRADA: Manteniendo PRIMERO {marca_seleccionada.strftime('%Y-%m-%d %H:%M')} (descartando {len(grupo)-1} duplicados)")
+                else:
+                    marca_seleccionada = grupo[-1]  # ÚLTIMO
+                    print(f"  🔄 Grupo SALIDA: Manteniendo ÚLTIMO {marca_seleccionada.strftime('%Y-%m-%d %H:%M')} (descartando {len(grupo)-1} duplicados)")
+                
+                filtered.append(marca_seleccionada)
+                ultimo_tipo = tipo_grupo
         
         if len(filtered) != len(marcas):
             print(f"  Marcas después de filtrar duplicados: {len(filtered)} (original: {len(marcas)})")
         
         print(f"  Total marcas a procesar: {len(filtered)}")
         
-        # Paso 2: Clasificar con lógica de alternancia
+        # Paso 2: Clasificar con lógica de alternancia mejorada
         marcas_clasificadas = []
-        estado_esperado = 'ENTRADA'  # Comenzamos esperando una entrada
+        ultimo_tipo = None  # Rastrear el último tipo asignado
         
         for i, marca in enumerate(filtered):
             hora = marca.hour
@@ -171,23 +234,30 @@ async def procesar(archivo: UploadFile):
             # Marcas de madrugada (00:00-05:59) son SALIDAS de turno nocturno
             if hora < 6:
                 tipo = 'SALIDA'
-                estado_esperado = 'ENTRADA'  # Después de una salida, esperamos entrada
+                ultimo_tipo = 'SALIDA'
             else:
-                # Para el resto del día, alternamos según el estado esperado
-                # PERO si hay un gap muy grande (>3 horas) con la marca anterior, resetear a ENTRADA
-                if i > 0:
+                # Para el resto del día, alternamos basándonos en el último tipo
+                if ultimo_tipo is None:
+                    # Primera marca del día
+                    tipo = 'ENTRADA'
+                elif i > 0:
                     diff_horas = (marca - filtered[i-1]).total_seconds() / 3600
-                    if diff_horas > 3:
-                        # Gap grande, probablemente nueva sesión
-                        estado_esperado = 'ENTRADA'
-                
-                tipo = estado_esperado
-                
-                # Alternar para la siguiente marca
-                if estado_esperado == 'ENTRADA':
-                    estado_esperado = 'SALIDA'
+                    
+                    # Gap muy grande (>12h) sugiere que es un nuevo día/turno
+                    if diff_horas > 12:
+                        tipo = 'ENTRADA'
+                    # Gap de 2+ horas después de una SALIDA = nueva sesión (INGRESO)
+                    elif diff_horas >= 2 and ultimo_tipo == 'SALIDA':
+                        tipo = 'ENTRADA'
+                        print(f"      Gap de {diff_horas:.1f}h después de SALIDA → Nueva sesión")
+                    # Sin gap significativo, simplemente alternamos
+                    else:
+                        tipo = 'SALIDA' if ultimo_tipo == 'ENTRADA' else 'ENTRADA'
                 else:
-                    estado_esperado = 'ENTRADA'
+                    # Alternancia simple
+                    tipo = 'SALIDA' if ultimo_tipo == 'ENTRADA' else 'ENTRADA'
+                
+                ultimo_tipo = tipo
             
             marcas_clasificadas.append({
                 'datetime': marca,
@@ -270,8 +340,75 @@ async def procesar(archivo: UploadFile):
         # Obtener todas las marcas del usuario ordenadas
         marcas = sorted(g["datetime"].tolist())
         
+        # Paso 1: Agrupar marcas cercanas (< 5 minutos) y decidir cuál mantener según contexto
+        grupos_duplicados = []
+        i = 0
+        while i < len(marcas):
+            grupo = [marcas[i]]
+            j = i + 1
+            while j < len(marcas):
+                diff_minutos = (marcas[j] - marcas[i]).total_seconds() / 60
+                if diff_minutos <= 5:
+                    grupo.append(marcas[j])
+                    j += 1
+                else:
+                    break
+            grupos_duplicados.append(grupo)
+            i = j
+        
+        # Procesar cada grupo con lógica inteligente
+        filtered = []
+        ultimo_tipo = None
+        
+        for grupo in grupos_duplicados:
+            if len(grupo) == 1:
+                filtered.append(grupo[0])
+                # Determinar tipo para siguiente iteración
+                hora = grupo[0].hour
+                if hora < 6:
+                    ultimo_tipo = 'SALIDA'
+                elif ultimo_tipo is None:
+                    ultimo_tipo = 'ENTRADA'
+                elif len(filtered) > 1:
+                    diff_horas = (grupo[0] - filtered[-2]).total_seconds() / 3600
+                    if diff_horas > 12:
+                        ultimo_tipo = 'ENTRADA'
+                    elif diff_horas >= 2 and ultimo_tipo == 'SALIDA':
+                        ultimo_tipo = 'ENTRADA'
+                    else:
+                        ultimo_tipo = 'SALIDA' if ultimo_tipo == 'ENTRADA' else 'ENTRADA'
+                else:
+                    ultimo_tipo = 'SALIDA' if ultimo_tipo == 'ENTRADA' else 'ENTRADA'
+            else:
+                # Grupo de duplicados
+                hora = grupo[0].hour
+                if hora < 6:
+                    tipo_grupo = 'SALIDA'
+                elif ultimo_tipo is None:
+                    tipo_grupo = 'ENTRADA'
+                elif len(filtered) > 0:
+                    diff_horas = (grupo[0] - filtered[-1]).total_seconds() / 3600
+                    if diff_horas > 12:
+                        tipo_grupo = 'ENTRADA'
+                    elif diff_horas >= 2 and ultimo_tipo == 'SALIDA':
+                        tipo_grupo = 'ENTRADA'
+                    else:
+                        tipo_grupo = 'SALIDA' if ultimo_tipo == 'ENTRADA' else 'ENTRADA'
+                else:
+                    tipo_grupo = 'SALIDA' if ultimo_tipo == 'ENTRADA' else 'ENTRADA'
+                
+                # Seleccionar según el tipo: ENTRADA=primero, SALIDA=último
+                if tipo_grupo == 'ENTRADA':
+                    filtered.append(grupo[0])
+                else:
+                    filtered.append(grupo[-1])
+                
+                ultimo_tipo = tipo_grupo
+        
+        marcas = filtered
+        
         # Clasificar cada marca como ENTRADA o SALIDA
-        estado_esperado = 'ENTRADA'
+        ultimo_tipo = None  # Rastrear el último tipo asignado
         
         for i, marca in enumerate(marcas):
             hora = marca.hour
@@ -279,21 +416,29 @@ async def procesar(archivo: UploadFile):
             # Marcas de madrugada (00:00-05:59) son SALIDAS de turno nocturno
             if hora < 6:
                 tipo = 'SALIDA'
-                estado_esperado = 'ENTRADA'
+                ultimo_tipo = 'SALIDA'
             else:
-                # Verificar si hay gap grande con la marca anterior
-                if i > 0:
+                # Para el resto del día, alternamos basándonos en el último tipo
+                if ultimo_tipo is None:
+                    # Primera marca del día
+                    tipo = 'ENTRADA'
+                elif i > 0:
                     diff_horas = (marca - marcas[i-1]).total_seconds() / 3600
-                    if diff_horas > 3:
-                        estado_esperado = 'ENTRADA'
-                
-                tipo = estado_esperado
-                
-                # Alternar para la siguiente marca
-                if estado_esperado == 'ENTRADA':
-                    estado_esperado = 'SALIDA'
+                    
+                    # Gap muy grande (>12h) sugiere que es un nuevo día/turno
+                    if diff_horas > 12:
+                        tipo = 'ENTRADA'
+                    # Gap de 2+ horas después de una SALIDA = nueva sesión (INGRESO)
+                    elif diff_horas >= 2 and ultimo_tipo == 'SALIDA':
+                        tipo = 'ENTRADA'
+                    # Sin gap significativo, simplemente alternamos
+                    else:
+                        tipo = 'SALIDA' if ultimo_tipo == 'ENTRADA' else 'ENTRADA'
                 else:
-                    estado_esperado = 'ENTRADA'
+                    # Alternancia simple
+                    tipo = 'SALIDA' if ultimo_tipo == 'ENTRADA' else 'ENTRADA'
+                
+                ultimo_tipo = tipo
             
             # Preparar registro crudo con el formato solicitado
             registro = {
