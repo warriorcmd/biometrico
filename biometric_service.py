@@ -8,9 +8,11 @@ app = FastAPI()
 
 # Parámetros ajustables
 DUPLICATE_MINUTES = 3        # eliminar marcas dentro de X minutos (duplicados)
-NIGHT_CUTOFF_HOUR = 6        # marcas antes de esta hora se asignan al día anterior (turnos noche)
-MAX_SHIFT_HOURS = 13         # si una sesión dura más de esto se marca como sospechosa
+MAX_SHIFT_HOURS = 14         # jornada máxima razonable (incluye horas extras)
 MIN_SESSION_HOURS = 0.01     # sesión mínima válida (evitar ceros exactos)
+MAX_BREAK_HOURS = 18         # si entre dos marcas hay más de X horas, son entradas distintas
+NORMAL_SHIFT_HOURS = 8       # jornada laboral estándar (para referencia de horas extras)
+MORNING_CUTOFF_HOUR = 8      # marcas antes de esta hora pueden ser salidas de turno nocturno
 
 @app.post("/procesar")
 async def procesar(archivo: UploadFile):
@@ -59,86 +61,100 @@ async def procesar(archivo: UploadFile):
     df = df[(df["diff_min"].isna()) | (df["diff_min"] > DUPLICATE_MINUTES)].copy()
     df = df.drop(columns=["diff_min"])
 
-    # 2) asignar día laboral real (marcas entre 00:00 y NIGHT_CUTOFF_HOUR -> día anterior)
-    df["date_real"] = df["datetime"].dt.date
-    df.loc[df["datetime"].dt.hour < NIGHT_CUTOFF_HOUR, "date_real"] = df.loc[df["datetime"].dt.hour < NIGHT_CUTOFF_HOUR, "date_real"] - pd.to_timedelta(1, unit='d')
-
-    # 3) agrupar por user + date_real y recolectar listas de marcas
+    # 2) Estrategia mejorada: emparejar cronológicamente con detección inteligente
     result_sessions = []
     suspect_sessions = 0
 
     for uid, g in df.groupby("user_id"):
-        # orden por marca absoluta
+        # ordenar todas las marcas cronológicamente
         g = g.sort_values("datetime").reset_index(drop=True)
-        # agrupar por date_real
-        daily_groups = { d: grp.sort_values("datetime") for d, grp in g.groupby("date_real") }
-
-        # convertimos a lista ordenada por fecha_real ascendente
-        days_sorted = sorted(daily_groups.keys())
-
-        for idx, day in enumerate(days_sorted):
-            marks = list(daily_groups[day]["datetime"])
-            # Si hay cantidad impar, intentar "tomar prestada" la primera marca del siguiente día
-            if len(marks) % 2 == 1:
-                # intentar tomar la primera marca del día siguiente si existe
-                if idx + 1 < len(days_sorted):
-                    next_day = days_sorted[idx + 1]
-                    next_marks = list(daily_groups[next_day]["datetime"])
-                    if next_marks:
-                        # solo si la marca del siguiente día es de madrugada (ej: < NIGHT_CUTOFF_HOUR) o razonable
-                        cand = next_marks[0]
-                        # si la marca candidata ocurre en la madrugada del next_day (hora < NIGHT_CUTOFF_HOUR)
-                        if cand.hour < NIGHT_CUTOFF_HOUR:
-                            # anexarla para emparejar salida nocturna
-                            marks.append(cand)
-                            # también remover esa marca del siguiente grupo para no duplicarla
-                            daily_groups[next_day] = daily_groups[next_day].iloc[1:]
-                        else:
-                            # si no es madrugada, preferimos dejar la marca sin pareja y tratarla como sospechosa
-                            pass
-
-            # emparejar secuencialmente
-            for i in range(0, len(marks), 2):
-                if i+1 < len(marks):
-                    entrada = marks[i]
-                    salida  = marks[i+1]
-                    dur_h = (salida - entrada).total_seconds() / 3600.0
-
-                    flag = None
-                    if dur_h <= 0:
-                        flag = "negativa_o_zero"
-                    elif dur_h > MAX_SHIFT_HOURS:
-                        flag = "muy_larga"
-                        suspect_sessions += 1
-
-                    # solo registrar sesiones mínimas razonables
-                    if dur_h >= MIN_SESSION_HOURS:
-                        result_sessions.append({
-                            "user_id": int(uid),
-                            "entrada": entrada.strftime("%Y-%m-%d %H:%M:%S"),
-                            "salida": salida.strftime("%Y-%m-%d %H:%M:%S"),
-                            "horas": round(dur_h, 2),
-                            "date_real": str(day),
-                            "flag": flag
-                        })
-                else:
-                    # marca sin pareja restante -> la registramos como incompleta para revisión
-                    entrada = marks[i]
+        marks = list(g["datetime"])
+        
+        # emparejar considerando patrones de turnos
+        i = 0
+        while i < len(marks):
+            entrada = marks[i]
+            
+            # buscar la siguiente marca como posible salida
+            if i + 1 < len(marks):
+                salida = marks[i + 1]
+                dur_h = (salida - entrada).total_seconds() / 3600.0
+                
+                # validar que tenga sentido como par entrada-salida
+                flag = None
+                
+                if dur_h <= 0:
+                    # si es negativo o cero, algo anda mal - registrar solo la entrada
                     result_sessions.append({
-                        "user_id": int(uid),
-                        "entrada": entrada.strftime("%Y-%m-%d %H:%M:%S"),
-                        "salida": None,
-                        "horas": None,
-                        "date_real": str(day),
-                        "flag": "sin_pareja"
+                        "person_id": int(uid),
+                        "date_time_attendance": entrada.strftime("%Y-%m-%d %H:%M:%S"),
+                        "date_attendance": entrada.strftime("%Y-%m-%d"),
+                        "time_attendance": entrada.strftime("%H:%M:%S"),
+                        "type": "INGRESO"
                     })
+                    i += 1
+                    continue
+                
+                # Lógica inteligente para detectar si la segunda marca es salida o nueva entrada
+                # Si la segunda marca es de madrugada (< MORNING_CUTOFF_HOUR), probablemente sea salida
+                # aunque hayan pasado muchas horas
+                if dur_h > MAX_BREAK_HOURS:
+                    # Verificar si la segunda marca es de madrugada
+                    if salida.hour < MORNING_CUTOFF_HOUR:
+                        # Es turno nocturno - tratar como entrada-salida
+                        pass  # continuar con el procesamiento normal
+                    else:
+                        # La primera marca es una entrada sin salida
+                        result_sessions.append({
+                            "person_id": int(uid),
+                            "date_time_attendance": entrada.strftime("%Y-%m-%d %H:%M:%S"),
+                            "date_attendance": entrada.strftime("%Y-%m-%d"),
+                            "time_attendance": entrada.strftime("%H:%M:%S"),
+                            "type": "INGRESO"
+                        })
+                        # La segunda marca la procesaremos en la siguiente iteración
+                        i += 1
+                    continue
+                
+                # Es un par válido entrada-salida
+                if dur_h > MAX_SHIFT_HOURS:
+                    flag = "muy_larga"
+                    suspect_sessions += 1
+                
+                # registrar la sesión con datos básicos
+                result_sessions.append({
+                    "person_id": int(uid),
+                    "date_time_attendance": entrada.strftime("%Y-%m-%d %H:%M:%S"),
+                    "date_attendance": entrada.strftime("%Y-%m-%d"),
+                    "time_attendance": entrada.strftime("%H:%M:%S"),
+                    "type": "INGRESO"
+                })
+                
+                result_sessions.append({
+                    "person_id": int(uid),
+                    "date_time_attendance": salida.strftime("%Y-%m-%d %H:%M:%S"),
+                    "date_attendance": salida.strftime("%Y-%m-%d"),
+                    "time_attendance": salida.strftime("%H:%M:%S"),
+                    "type": "SALIDA"
+                })
+                
+                i += 2  # avanzar dos posiciones
+            else:
+                # marca sin pareja (última marca sin salida)
+                result_sessions.append({
+                    "person_id": int(uid),
+                    "date_time_attendance": entrada.strftime("%Y-%m-%d %H:%M:%S"),
+                    "date_attendance": entrada.strftime("%Y-%m-%d"),
+                    "time_attendance": entrada.strftime("%H:%M:%S"),
+                    "type": "INGRESO"
+                })
+                i += 1
 
-    # ordenar por user + entrada
-    result_sessions = sorted(result_sessions, key=lambda x: (x["user_id"], x["entrada"] or ""))
+    # ordenar por person_id + fecha/hora
+    result_sessions = sorted(result_sessions, key=lambda x: (x["person_id"], x["date_time_attendance"]))
 
     return {
         "success": True,
         "total_sesiones": len(result_sessions),
-        "suspect_sessions": suspect_sessions,
         "data": result_sessions
     }
