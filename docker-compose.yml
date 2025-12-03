@@ -1,0 +1,49 @@
+services:
+  # Servicio de procesamiento biométrico
+  biometric-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.biometric
+    container_name: biometric-service
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+      - /app/__pycache__
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    command: ["uvicorn", "biometric_service:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+
+  # Servicio de eliminación de fondo con IA (rembg)
+  image-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.image
+    container_name: image-service
+    ports:
+      - "8500:8500"
+    volumes:
+      - .:/app
+      - /app/__pycache__
+    environment:
+      - PYTHONUNBUFFERED=1
+      - U2NET_HOME=/app/.u2net
+    restart: unless-stopped
+    command: ["uvicorn", "image:app", "--host", "0.0.0.0", "--port", "8500", "--reload"]
+
+  # Servicio de eliminación de fondo simple (OpenCV)
+  image-simple-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.biometric
+    container_name: image-simple-service
+    ports:
+      - "8501:8501"
+    volumes:
+      - .:/app
+      - /app/__pycache__
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    command: ["uvicorn", "image_simple:app", "--host", "0.0.0.0", "--port", "8501", "--reload"]

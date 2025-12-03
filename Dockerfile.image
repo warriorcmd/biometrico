@@ -1,0 +1,33 @@
+# Dockerfile para el servicio de eliminación de fondo con IA (rembg)
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Instalar dependencias del sistema
+RUN apt-get update && apt-get install -y \
+    libgl1 \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender1 \
+    libgomp1 \
+    libgthread-2.0-0 \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copiar requirements
+COPY requirements.txt .
+
+# Instalar dependencias base primero
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Instalar rembg con versión específica de onnxruntime que funciona mejor
+RUN pip install --no-cache-dir rembg==2.0.50 onnxruntime==1.15.1
+
+# Copiar código
+COPY . .
+
+# Crear directorio para modelos
+RUN mkdir -p /app/.u2net
+
+EXPOSE 8500
