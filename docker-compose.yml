@@ -55,7 +55,7 @@ services:
       dockerfile: Dockerfile.nginx
     container_name: nginx-proxy
     ports:
-      - "80:80"
+      - "8080:80"
       # Uncomment the next line if you add TLS certs and want to expose 443
       # - "443:443"
     depends_on:
