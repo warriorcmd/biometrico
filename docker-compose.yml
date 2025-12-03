@@ -47,3 +47,19 @@ services:
       - PYTHONUNBUFFERED=1
     restart: unless-stopped
     command: ["uvicorn", "image_simple:app", "--host", "0.0.0.0", "--port", "8501", "--reload"]
+
+  # Nginx reverse proxy for the three services
+  nginx-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile.nginx
+    container_name: nginx-proxy
+    ports:
+      - "80:80"
+      # Uncomment the next line if you add TLS certs and want to expose 443
+      # - "443:443"
+    depends_on:
+      - biometric-api
+      - image-api
+      - image-simple-api
+    restart: unless-stopped
