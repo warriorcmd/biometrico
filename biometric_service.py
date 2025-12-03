@@ -260,48 +260,68 @@ async def procesar(archivo: UploadFile):
         
         return sesiones
 
-    salida = []
-    resumen = {}
-
+    # Preparar datos crudos para enviar
+    registros_crudos = []
+    
     for uid, g in df.groupby('user_id'):
+        print(f"\n📊 Procesando usuario: {uid}")
         sesiones = agrupar_sesiones(g)
-        total_horas = 0.0
-        total_horas_extras = 0.0
         
-        for ingreso, salida_dt in sesiones:
-            # Calcular duración de la sesión
-            duracion = (salida_dt - ingreso).total_seconds() / 3600
-            horas_trabajadas = round(duracion, 2)
-            horas_extra = round(max(0.0, duracion - 8.0), 2)
-            
-            # Determinar fecha base (usar la fecha de ingreso)
-            fecha = ingreso.date().strftime('%Y-%m-%d')
-            
-            salida.append({
-                'dni': int(uid),
-                'fecha': fecha,
-                'hora_ingreso': ingreso.strftime('%H:%M:%S'),
-                'hora_salida': salida_dt.strftime('%H:%M:%S'),
-                'ingreso': ingreso.strftime('%Y-%m-%d %H:%M:%S'),
-                'salida': salida_dt.strftime('%Y-%m-%d %H:%M:%S'),
-                'horas_trabajadas': horas_trabajadas,
-                'horas_extra': horas_extra
-            })
-            
-            total_horas += duracion
-            total_horas_extras += max(0.0, duracion - 8.0)
+        # Obtener todas las marcas del usuario ordenadas
+        marcas = sorted(g["datetime"].tolist())
         
-        resumen[int(uid)] = {
-            'dni': int(uid),
-            'total_horas': round(total_horas, 2),
-            'total_horas_extra': round(total_horas_extras, 2),
-            'total_sesiones': len(sesiones)
-        }
-
-    # Devolver sesiones de trabajo y resumen por usuario
+        # Clasificar cada marca como ENTRADA o SALIDA
+        estado_esperado = 'ENTRADA'
+        
+        for i, marca in enumerate(marcas):
+            hora = marca.hour
+            
+            # Marcas de madrugada (00:00-05:59) son SALIDAS de turno nocturno
+            if hora < 6:
+                tipo = 'SALIDA'
+                estado_esperado = 'ENTRADA'
+            else:
+                # Verificar si hay gap grande con la marca anterior
+                if i > 0:
+                    diff_horas = (marca - marcas[i-1]).total_seconds() / 3600
+                    if diff_horas > 3:
+                        estado_esperado = 'ENTRADA'
+                
+                tipo = estado_esperado
+                
+                # Alternar para la siguiente marca
+                if estado_esperado == 'ENTRADA':
+                    estado_esperado = 'SALIDA'
+                else:
+                    estado_esperado = 'ENTRADA'
+            
+            # Preparar registro crudo con el formato solicitado
+            registro = {
+                'person_id': int(uid),
+                'date_time_attendance': marca.strftime('%Y-%m-%d %H:%M:%S'),
+                'date_attendance': marca.strftime('%Y-%m-%d'),
+                'time_attendance': marca.strftime('%H:%M:%S'),
+                'type': tipo,
+                'biometrico': {
+                    'datetime': marca.strftime('%Y-%m-%d %H:%M:%S'),
+                    'hora': marca.hour,
+                    'minuto': marca.minute,
+                    'dia_semana': marca.strftime('%A'),
+                    'timestamp': int(marca.timestamp())
+                }
+            }
+            
+            registros_crudos.append(registro)
+            print(f"  ✓ {marca.strftime('%Y-%m-%d %H:%M:%S')} → {tipo}")
+    
+    # Ordenar todos los registros por fecha/hora
+    registros_crudos.sort(key=lambda x: x['date_time_attendance'])
+    
+    # Devolver los datos crudos
     resultado = {
-        'rows': salida,
-        'summary': list(resumen.values())
+        'success': True,
+        'total_registros': len(registros_crudos),
+        'data': registros_crudos
     }
 
     return resultado
