@@ -9,7 +9,8 @@ import numpy as np
 app = FastAPI(
     title="API de Eliminación de Fondos (Método Simple)",
     description="API para remover fondos usando procesamiento de imagen básico",
-    version="1.0.0"
+    version="1.0.0",
+    root_path="/quitar_fondo_simple"
 )
 
 # Configurar CORS

@@ -4,7 +4,12 @@ import pandas as pd
 import io
 import json
 
-app = FastAPI()
+app = FastAPI(
+    title="Biometric Service API",
+    description="API para procesar archivos biométricos (Excel/CSV)",
+    version="1.0.0",
+    root_path="/biometrico"
+)
 
 @app.post("/procesar")
 async def procesar(archivo: UploadFile):

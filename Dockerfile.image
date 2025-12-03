@@ -3,7 +3,7 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Instalar dependencias del sistema
+# Instalar dependencias del sistema necesarias para OpenCV y onnxruntime
 RUN apt-get update && apt-get install -y \
     libgl1 \
     libglib2.0-0 \
@@ -21,8 +21,12 @@ COPY requirements.txt .
 # Instalar dependencias base primero
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Instalar rembg con versión específica de onnxruntime que funciona mejor
-RUN pip install --no-cache-dir rembg==2.0.50 onnxruntime==1.15.1
+# Instalar onnxruntime-silicon o versión GPU si está disponible, sino usar CPU
+# Usar versión específica que evita el problema del executable stack
+RUN pip install --no-cache-dir onnxruntime==1.16.3
+
+# Instalar rembg después de onnxruntime
+RUN pip install --no-cache-dir rembg[gpu]==2.0.57
 
 # Copiar código
 COPY . .

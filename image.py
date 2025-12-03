@@ -9,7 +9,8 @@ import os
 app = FastAPI(
     title="API de Eliminación de Fondos",
     description="API para remover fondos de imágenes usando rembg con IA",
-    version="1.0.0"
+    version="1.0.0",
+    root_path="/quitar_fondo"
 )
 
 # Configurar CORS
